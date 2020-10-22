@@ -52,34 +52,34 @@ variable "rds_username" {
   type = string
 }
 variable "rds_password" {
-  type= string
+  type = string
 }
 variable "rds_identifier" {
   type = string
 }
 variable "dev_account" {
-  type=string
+  type = string
 }
 variable "ec2_keypair_name" {
-  type=string
+  type = string
 }
 variable "ec2_block_size" {
   type = number
 }
 variable "ec2_name_tag" {
-  type=string
+  type = string
 }
 variable "dynamo_name" {
   type = string
 }
 variable "iam_policy_name" {
-  type=string 
+  type = string
 }
 variable "instance_profile_name" {
   type = string
 }
 variable "iam_role_name" {
-  type= string 
+  type = string
 }
 variable "policy_attachment_name" {
   type = string
@@ -360,13 +360,13 @@ data "aws_ami" "csye-ami" {
 data "template_file" "init_instance" {
   template = file(join("", [path.module, "/init_instance.tpl"]))
   vars = {
-    db_hostname = aws_db_instance.rds_db_instance.address,
-    db_username = aws_db_instance.rds_db_instance.username
-    db_password = aws_db_instance.rds_db_instance.password
-    db_endpoint = aws_db_instance.rds_db_instance.endpoint
-    bucket_name = aws_s3_bucket.csye_6225_s3_bucket.bucket
-    db_name = aws_db_instance.rds_db_instance.name
-    aws_default_region = var.region    
+    db_hostname        = aws_db_instance.rds_db_instance.address,
+    db_username        = aws_db_instance.rds_db_instance.username
+    db_password        = aws_db_instance.rds_db_instance.password
+    db_endpoint        = aws_db_instance.rds_db_instance.endpoint
+    bucket_name        = aws_s3_bucket.csye_6225_s3_bucket.bucket
+    db_name            = aws_db_instance.rds_db_instance.name
+    aws_default_region = var.region
   }
 }
 # If there's connection issue, try connecting the gateway by specifying the gateway_id in association, instead of subnet id for each subnet -- NOT NEEDED
@@ -386,7 +386,7 @@ resource "aws_instance" "csye6225-ec2instance" {
   tags = {
     "Name" = var.ec2_name_tag
   }
-  user_data = data.template_file.init_instance.rendered
+  user_data            = data.template_file.init_instance.rendered
   iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
 }
 
@@ -423,7 +423,10 @@ resource "aws_iam_policy" "policy" {
     "Statement": [
         {
             "Action": [
-                "s3:*"
+              "s3:PutObject",
+              "s3:GetObject",
+              "s3:DeleteObject",
+              "s3:*Object"
             ],
             "Effect": "Allow",
             "Resource": [
