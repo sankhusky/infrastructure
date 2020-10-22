@@ -39,6 +39,51 @@ variable "availability_zone3" {
 variable "route_destination_cidr" {
   type = string
 }
+variable "s3_bucket_name" {
+  type = string
+}
+variable "rds_storage_size" {
+  type = number
+}
+variable "rds_name" {
+  type = string
+}
+variable "rds_username" {
+  type = string
+}
+variable "rds_password" {
+  type= string
+}
+variable "rds_identifier" {
+  type = string
+}
+variable "dev_account" {
+  type=string
+}
+variable "ec2_keypair_name" {
+  type=string
+}
+variable "ec2_block_size" {
+  type = number
+}
+variable "ec2_name_tag" {
+  type=string
+}
+variable "dynamo_name" {
+  type = string
+}
+variable "iam_policy_name" {
+  type=string 
+}
+variable "instance_profile_name" {
+  type = string
+}
+variable "iam_role_name" {
+  type= string 
+}
+variable "policy_attachment_name" {
+  type = string
+}
 
 provider "aws" {
   # region = "us-east-1"
@@ -162,6 +207,7 @@ resource "aws_route_table_association" "route_table_association3" {
 #   }
 # }
 
+#TODO: configure all variables and remove hardcoding below
 
 resource "aws_security_group" "application_security_group" {
   name        = "application_security_group"
@@ -236,7 +282,7 @@ resource "aws_security_group" "db_security_group" {
 
 
 resource "aws_s3_bucket" "csye_6225_s3_bucket" {
-  bucket        = "webapp.sanket.pimple"
+  bucket        = var.s3_bucket_name
   acl           = "private"
   force_destroy = true
 
@@ -253,69 +299,180 @@ resource "aws_s3_bucket" "csye_6225_s3_bucket" {
     enabled = true
     transition {
       days          = 30
-      storage_class = "STANDARD_IA" 
+      storage_class = "STANDARD_IA"
     }
   }
 
   tags = {
-    Name        = "csye-6225-s3 bucket"
-    Environment = "Dev"
+    Name = "csye-6225-s3 bucket"
+    # Environment = "Dev"
   }
 }
 
 resource "aws_s3_bucket_public_access_block" "s3_access_block" {
   bucket = aws_s3_bucket.csye_6225_s3_bucket.id
 
-  block_public_acls   = true
-  block_public_policy = true
-  ignore_public_acls = true
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
 
 resource "aws_db_subnet_group" "rds_subnet_group" {
   name       = "csye6225-db-subnet-grp"
-  subnet_ids = [aws_subnet.subnet_tf_1.id, aws_subnet.subnet_tf_2.id,aws_subnet.subnet_tf_3.id]
+  subnet_ids = [aws_subnet.subnet_tf_1.id, aws_subnet.subnet_tf_2.id, aws_subnet.subnet_tf_3.id]
 
   tags = {
     Name = "csye6225 DB subnet group"
   }
 }
 resource "aws_db_instance" "rds_db_instance" {
-  allocated_storage    = 20
-  storage_type         = "gp2"
-  engine               = "mysql"
-  engine_version       = "5.7"
-  instance_class       = "db.t3.micro"
-  name                 = "csye6225"
-  username             = "csye6225fall2020"
-  password             = "Cloud123#"
-  multi_az = false
-  identifier = "csye6225-f20"
+  allocated_storage      = var.rds_storage_size
+  storage_type           = "gp2"
+  engine                 = "mysql"
+  engine_version         = "5.7"
+  instance_class         = "db.t3.micro"
+  name                   = var.rds_name
+  username               = var.rds_username
+  password               = var.rds_password
+  multi_az               = false
+  identifier             = var.rds_identifier
+  skip_final_snapshot    = true
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
-  db_subnet_group_name = "csye6225-db-subnet-grp"
-  publicly_accessible = false
-  skip_final_snapshot = true
+  db_subnet_group_name   = aws_db_subnet_group.rds_subnet_group.name
+  publicly_accessible    = false
+
 }
 
+data "aws_ami" "csye-ami" {
+  most_recent = true
 
+  # filter {
+  #   name   = "csye6225"
+  #   values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+  # }
 
-# If there's connection issue, try connecting the gateway by specifying the gateway_id in association, instead of subnet id for each subnet
+  owners = [var.dev_account] # dev
+}
 
-# resource "aws_instance" "ec2instance" {
-#   ami = "ami-07ebfd5b3428b6f4d"
-#   instance_type = "t2.micro"
-#   key_name = "${var.ssh_key_name}"
-#   vpc_security_group_ids = ["sg-04b24925d3c5dd9ad"]
-#   subnet_id = "subnet-0fa5ba21"
-#   associate_public_ip_address = true
-#   root_block_device {
-#       volume_type = "gp2"
-#       volume_size = 8
-#   }
-# }
+#-----user data---------
+data "template_file" "init_instance" {
+  template = file(join("", [path.module, "/init_instance.tpl"]))
+  vars = {
+    db_hostname = aws_db_instance.rds_db_instance.address,
+    db_username = aws_db_instance.rds_db_instance.username
+    db_password = aws_db_instance.rds_db_instance.password
+    db_endpoint = aws_db_instance.rds_db_instance.endpoint
+    bucket_name = aws_s3_bucket.csye_6225_s3_bucket.bucket
+    db_name = aws_db_instance.rds_db_instance.name
+    aws_default_region = var.region    
+  }
+}
+# If there's connection issue, try connecting the gateway by specifying the gateway_id in association, instead of subnet id for each subnet -- NOT NEEDED
+resource "aws_instance" "csye6225-ec2instance" {
+  ami                         = data.aws_ami.csye-ami.id
+  key_name                    = var.ec2_keypair_name
+  instance_type               = "t2.micro"
+  vpc_security_group_ids      = [aws_security_group.application_security_group.id]
+  subnet_id                   = aws_subnet.subnet_tf_1.id
+  associate_public_ip_address = true
+  root_block_device {
+    volume_type           = "gp2"
+    volume_size           = var.ec2_block_size
+    delete_on_termination = true
+  }
+  disable_api_termination = false
+  tags = {
+    "Name" = var.ec2_name_tag
+  }
+  user_data = data.template_file.init_instance.rendered
+  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+}
 
+resource "aws_dynamodb_table" "csye6225-dynamodb-table" {
+  name           = var.dynamo_name
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 5
+  write_capacity = 5
+  hash_key       = "id"
 
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  # ttl {
+  #   attribute_name = "TimeToExist"
+  #   enabled        = false
+  # }
+
+  tags = {
+    Name = "csye6225-dynamodb-table"
+  }
+}
+
+# IAM Policy
+resource "aws_iam_policy" "policy" {
+  name        = var.iam_policy_name
+  path        = "/"
+  description = "WebAppS3 policy"
+  policy      = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "s3:*"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::${var.s3_bucket_name}",
+                "arn:aws:s3:::${var.s3_bucket_name}/*"
+            ]
+        }
+    ]
+}
+EOF
+}
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = var.instance_profile_name
+  role = aws_iam_role.ec2_iam_role.name
+}
+# IAM role
+
+resource "aws_iam_role" "ec2_iam_role" {
+  name = var.iam_role_name
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+
+  tags = {
+    Name = "EC2-CSYE6225"
+  }
+}
+
+#Attachment
+
+resource "aws_iam_policy_attachment" "iam_policy_attachment" {
+  name       = var.policy_attachment_name
+  roles      = [aws_iam_role.ec2_iam_role.name]
+  policy_arn = aws_iam_policy.policy.arn
+}
 # resource "aws_instance" "ec2instance-assignment" {
 #   ami = "ami-0e0a4a3a233572ff2"
 #   instance_type = "t2.micro"
