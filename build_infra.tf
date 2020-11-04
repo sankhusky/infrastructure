@@ -84,7 +84,9 @@ variable "iam_role_name" {
 variable "policy_attachment_name" {
   type = string
 }
-
+variable "cicd_username" {
+  type = string
+}
 provider "aws" {
   # region = "us-east-1"
   # access_key = var.access_key
@@ -98,6 +100,26 @@ variable "availabilityZone" {
 variable "vpc_cidr" {
   type = string
 }
+
+variable "artifact_bucket_name" {
+  type = string
+}
+variable "artifact_folder_name" {
+  type = string
+}
+variable "codedeploy_application_name" {
+  type = string
+}
+variable "codedeploy_group_name" {
+  type = string
+}
+variable "hosted_zone_name" {
+  type = string
+}
+locals {
+  artifact_bucket_path = join("/", [var.artifact_bucket_name, var.artifact_folder_name])
+}
+
 
 resource "aws_vpc" "vpc_tf" {
   cidr_block                     = var.vpc_cidr
@@ -181,33 +203,6 @@ resource "aws_route_table_association" "route_table_association3" {
   subnet_id      = aws_subnet.subnet_tf_3.id
   route_table_id = aws_route_table.route_table_tf.id
 } # end resource
-
-# resource "aws_security_group" "app_sec_group" {
-#   name        = "app_security_group"
-#   description = "Application Security Group"
-#   vpc_id      = aws_vpc.vpc_tf.id
-
-#   ingress {
-#     description = "TLS from VPC"
-#     from_port   = 443
-#     to_port     = 443
-#     protocol    = "tcp"
-#     cidr_blocks = [aws_vpc.main.cidr_block]
-#   }
-
-#   egress {
-#     from_port   = 0
-#     to_port     = 0
-#     protocol    = "-1"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-
-#   tags = {
-#     Name = "allow_tls"
-#   }
-# }
-
-#TODO: configure all variables and remove hardcoding below
 
 resource "aws_security_group" "application_security_group" {
   name        = "application_security_group"
@@ -476,19 +471,199 @@ resource "aws_iam_policy_attachment" "iam_policy_attachment" {
   roles      = [aws_iam_role.ec2_iam_role.name]
   policy_arn = aws_iam_policy.policy.arn
 }
-# resource "aws_instance" "ec2instance-assignment" {
-#   ami = "ami-0e0a4a3a233572ff2"
-#   instance_type = "t2.micro"
-#   key_name = var.ssh_key_name
-#   subnet_id = aws_subnet.subnet_1_assignment.id
-#   vpc_security_group_ids = [aws_security_group.application_security_group.id]
-#   associate_public_ip_address = true
-#   root_block_device {
-#       volume_type = "gp2"
-#       volume_size = 8
-#   }
-# tags = {
-#     Name: "ec2instance-assignment"
+
+# --------CI/CD config-----------
+# Fetch user and attach policies
+data "aws_iam_user" "cicd_user" {
+  user_name = var.cicd_username
+}
+
+resource "aws_iam_policy" "cicd_download_policy" {
+  name        = "CodeDeploy-EC2-S3"
+  description = "This policy is required for EC2 instances to download latest application revision from S3."
+  policy      = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "s3:GetObject",
+                "s3:GetObjectVersion",
+                "s3:ListBucket"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::${var.artifact_bucket_name}",
+              "arn:aws:s3:::${var.artifact_bucket_name}/*",
+              "arn:aws:s3:::${local.artifact_bucket_path}/*"
+              ]
+        }
+    ]
+}
+  EOF
+}
+
+resource "aws_iam_policy" "cicd_upload_policy" {
+  name        = "GH-Upload-To-S3"
+  description = "This policy allows GitHub Actions to upload artifacts from latest successful build to dedicated S3 bucket used by CodeDeploy"
+  policy      = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:PutObjectAcl",
+                "s3:Get*",
+                "s3:List*"                
+            ],
+            "Resource": [
+              "arn:aws:s3:::${var.artifact_bucket_name}",
+              "arn:aws:s3:::${var.artifact_bucket_name}/*",
+              "arn:aws:s3:::${local.artifact_bucket_path}/*"
+            ]
+        }
+    ]
+}
+  EOF
+}
+
+# get current aws caller identity
+data "aws_caller_identity" "current" {}
+
+# TODO: check if the "*" in resources in below policy has to be replaced
+resource "aws_iam_policy" "codedeploy_policy" {
+  name        = "GH-Code-Deploy"
+  description = "This policy allows GitHub Actions to call CodeDeploy APIs to initiate application deployment on EC2 instances"
+  policy      = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "codedeploy:RegisterApplicationRevision",
+        "codedeploy:GetApplicationRevision"
+      ],
+      "Resource": [
+        "arn:aws:codedeploy:${var.region}:${data.aws_caller_identity.current.account_id}:application:${var.codedeploy_application_name}"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "codedeploy:CreateDeployment",
+        "codedeploy:GetDeployment"
+      ],
+      "Resource": [
+        "arn:aws:codedeploy:${var.region}:${data.aws_caller_identity.current.account_id}:deploymentgroup:${var.codedeploy_application_name}/${var.codedeploy_group_name}"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "codedeploy:GetDeploymentConfig"
+      ],
+      "Resource": [                
+        "arn:aws:codedeploy:${var.region}:${data.aws_caller_identity.current.account_id}:deploymentconfig:CodeDeployDefault.AllAtOnce"
+      ]
+    }
+  ]
+}
+  EOF
+}
+
+
+resource "aws_iam_role" "CodeDeployServiceRole" {
+  name = "CodeDeployServiceRole"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "codedeploy.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy_attachment" "AWSCodeDeployRole" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
+  role       = aws_iam_role.CodeDeployServiceRole.name
+}
+
+# Remove below after everything works
+# resource "aws_iam_user_policy_attachment" "cicd_download_policy_attach" {
+#   user       = data.aws_iam_user.cicd_user.user_name
+#   policy_arn = aws_iam_policy.cicd_download_policy.arn
 # }
 
-# }
+# attaching the download policy to EC2 Role
+
+resource "aws_iam_role_policy_attachment" "ec2_codedeploy_policy_attachment" {
+  role       = aws_iam_role.ec2_iam_role.name
+  policy_arn = aws_iam_policy.cicd_download_policy.arn
+}
+resource "aws_iam_user_policy_attachment" "cicd_upload_policy_attach" {
+  user       = data.aws_iam_user.cicd_user.user_name
+  policy_arn = aws_iam_policy.cicd_upload_policy.arn
+}
+
+resource "aws_iam_user_policy_attachment" "codedeploy_policy_attach" {
+  user       = data.aws_iam_user.cicd_user.user_name
+  policy_arn = aws_iam_policy.codedeploy_policy.arn
+}
+
+resource "aws_codedeploy_app" "codedeploy_app" {
+  compute_platform = "Server"
+  name             = var.codedeploy_application_name
+}
+
+
+resource "aws_codedeploy_deployment_group" "codedeploy_deployment_group" {
+  app_name              = aws_codedeploy_app.codedeploy_app.name
+  deployment_group_name = var.codedeploy_group_name
+  service_role_arn      = aws_iam_role.CodeDeployServiceRole.arn
+  deployment_config_name = "CodeDeployDefault.AllAtOnce"
+  deployment_style {
+    deployment_option = "WITHOUT_TRAFFIC_CONTROL"
+    deployment_type = "IN_PLACE"
+  }
+
+  ec2_tag_set {
+    ec2_tag_filter {
+      key   = "Name"
+      type  = "KEY_AND_VALUE"
+      value = var.ec2_name_tag
+    }
+  }
+
+
+}
+
+resource "aws_eip" "ec2_eip" {
+  instance = aws_instance.csye6225-ec2instance.id
+  vpc = true
+}
+
+data "aws_route53_zone" "selected_zone" {
+  name         = var.hosted_zone_name
+  private_zone = false
+}
+
+resource "aws_route53_record" "ec2_dns_record" {
+  zone_id = data.aws_route53_zone.selected_zone.zone_id
+  name    = "www.api.${data.aws_route53_zone.selected_zone.name}"
+  type    = "A"
+  ttl     = "60"
+  records = [aws_eip.ec2_eip.public_ip]
+}
+
