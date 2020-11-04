@@ -110,7 +110,12 @@ variable "artifact_folder_name" {
 variable "codedeploy_application_name" {
   type = string
 }
-
+variable "codedeploy_group_name" {
+  type = string
+}
+variable "hosted_zone_name" {
+  type = string
+}
 locals {
   artifact_bucket_path = join("/", [var.artifact_bucket_name, var.artifact_folder_name])
 }
@@ -489,6 +494,7 @@ resource "aws_iam_policy" "cicd_download_policy" {
             "Effect": "Allow",
             "Resource": [
               "arn:aws:s3:::${var.artifact_bucket_name}",
+              "arn:aws:s3:::${var.artifact_bucket_name}/*",
               "arn:aws:s3:::${local.artifact_bucket_path}/*"
               ]
         }
@@ -508,11 +514,13 @@ resource "aws_iam_policy" "cicd_upload_policy" {
             "Effect": "Allow",
             "Action": [
                 "s3:PutObject",
+                "s3:PutObjectAcl",
                 "s3:Get*",
-                "s3:List*"
+                "s3:List*"                
             ],
             "Resource": [
               "arn:aws:s3:::${var.artifact_bucket_name}",
+              "arn:aws:s3:::${var.artifact_bucket_name}/*",
               "arn:aws:s3:::${local.artifact_bucket_path}/*"
             ]
         }
@@ -549,7 +557,7 @@ resource "aws_iam_policy" "codedeploy_policy" {
         "codedeploy:GetDeployment"
       ],
       "Resource": [
-        "*"
+        "arn:aws:codedeploy:${var.region}:${data.aws_caller_identity.current.account_id}:deploymentgroup:${var.codedeploy_application_name}/${var.codedeploy_group_name}"
       ]
     },
     {
@@ -557,15 +565,39 @@ resource "aws_iam_policy" "codedeploy_policy" {
       "Action": [
         "codedeploy:GetDeploymentConfig"
       ],
-      "Resource": [
-        "arn:aws:codedeploy:${var.region}:${data.aws_caller_identity.current.account_id}:deploymentconfig:CodeDeployDefault.OneAtATime",
-        "arn:aws:codedeploy:${var.region}:${data.aws_caller_identity.current.account_id}:deploymentconfig:CodeDeployDefault.HalfAtATime",
+      "Resource": [                
         "arn:aws:codedeploy:${var.region}:${data.aws_caller_identity.current.account_id}:deploymentconfig:CodeDeployDefault.AllAtOnce"
       ]
     }
   ]
 }
   EOF
+}
+
+
+resource "aws_iam_role" "CodeDeployServiceRole" {
+  name = "CodeDeployServiceRole"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "codedeploy.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy_attachment" "AWSCodeDeployRole" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
+  role       = aws_iam_role.CodeDeployServiceRole.name
 }
 
 # Remove below after everything works
@@ -575,7 +607,7 @@ resource "aws_iam_policy" "codedeploy_policy" {
 # }
 
 # attaching the download policy to EC2 Role
-# TODO: test this, if doesnt work, try aws_iam_policy_attachment
+
 resource "aws_iam_role_policy_attachment" "ec2_codedeploy_policy_attachment" {
   role       = aws_iam_role.ec2_iam_role.name
   policy_arn = aws_iam_policy.cicd_download_policy.arn
@@ -588,5 +620,50 @@ resource "aws_iam_user_policy_attachment" "cicd_upload_policy_attach" {
 resource "aws_iam_user_policy_attachment" "codedeploy_policy_attach" {
   user       = data.aws_iam_user.cicd_user.user_name
   policy_arn = aws_iam_policy.codedeploy_policy.arn
+}
+
+resource "aws_codedeploy_app" "codedeploy_app" {
+  compute_platform = "Server"
+  name             = var.codedeploy_application_name
+}
+
+
+resource "aws_codedeploy_deployment_group" "codedeploy_deployment_group" {
+  app_name              = aws_codedeploy_app.codedeploy_app.name
+  deployment_group_name = var.codedeploy_group_name
+  service_role_arn      = aws_iam_role.CodeDeployServiceRole.arn
+  deployment_config_name = "CodeDeployDefault.AllAtOnce"
+  deployment_style {
+    deployment_option = "WITHOUT_TRAFFIC_CONTROL"
+    deployment_type = "IN_PLACE"
+  }
+
+  ec2_tag_set {
+    ec2_tag_filter {
+      key   = "Name"
+      type  = "KEY_AND_VALUE"
+      value = var.ec2_name_tag
+    }
+  }
+
+
+}
+
+resource "aws_eip" "ec2_eip" {
+  instance = aws_instance.csye6225-ec2instance.id
+  vpc = true
+}
+
+data "aws_route53_zone" "selected_zone" {
+  name         = var.hosted_zone_name
+  private_zone = false
+}
+
+resource "aws_route53_record" "ec2_dns_record" {
+  zone_id = data.aws_route53_zone.selected_zone.zone_id
+  name    = "www.api.${data.aws_route53_zone.selected_zone.name}"
+  type    = "A"
+  ttl     = "60"
+  records = [aws_eip.ec2_eip.public_ip]
 }
 
