@@ -612,6 +612,12 @@ resource "aws_iam_role_policy_attachment" "ec2_codedeploy_policy_attachment" {
   role       = aws_iam_role.ec2_iam_role.name
   policy_arn = aws_iam_policy.cicd_download_policy.arn
 }
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_policy_attachment" {
+  role       = aws_iam_role.ec2_iam_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
 resource "aws_iam_user_policy_attachment" "cicd_upload_policy_attach" {
   user       = data.aws_iam_user.cicd_user.user_name
   policy_arn = aws_iam_policy.cicd_upload_policy.arn
