@@ -365,24 +365,153 @@ data "template_file" "init_instance" {
   }
 }
 # If there's connection issue, try connecting the gateway by specifying the gateway_id in association, instead of subnet id for each subnet -- NOT NEEDED
-resource "aws_instance" "csye6225-ec2instance" {
-  ami                         = data.aws_ami.csye-ami.id
-  key_name                    = var.ec2_keypair_name
+# resource "aws_instance" "csye6225-ec2instance" {
+#   ami                         = data.aws_ami.csye-ami.id
+#   key_name                    = var.ec2_keypair_name
+#   instance_type               = "t2.micro"
+#   vpc_security_group_ids      = [aws_security_group.application_security_group.id]
+#   subnet_id                   = aws_subnet.subnet_tf_1.id
+#   associate_public_ip_address = true
+#   root_block_device {
+#     volume_type           = "gp2"
+#     volume_size           = var.ec2_block_size
+#     delete_on_termination = true
+#   }
+#   disable_api_termination = false
+#   tags = {
+#     "Name" = var.ec2_name_tag
+#   }
+#   user_data            = data.template_file.init_instance.rendered
+#   iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+# }
+
+resource "aws_launch_configuration" "csye6225_launch_conf" {
+  name_prefix                 = "asg_launch_config"
+  image_id                    = data.aws_ami.csye-ami.id
   instance_type               = "t2.micro"
-  vpc_security_group_ids      = [aws_security_group.application_security_group.id]
-  subnet_id                   = aws_subnet.subnet_tf_1.id
+  key_name                    = var.ec2_keypair_name
   associate_public_ip_address = true
+  user_data                   = data.template_file.init_instance.rendered
+  iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
+  security_groups             = [aws_security_group.application_security_group.id]
   root_block_device {
     volume_type           = "gp2"
     volume_size           = var.ec2_block_size
     delete_on_termination = true
   }
-  disable_api_termination = false
-  tags = {
-    "Name" = var.ec2_name_tag
+  lifecycle {
+    create_before_destroy = true
   }
-  user_data            = data.template_file.init_instance.rendered
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+}
+
+resource "aws_autoscaling_group" "csye6225-asg" {
+  name                 = "csye6225-asg"
+  vpc_zone_identifier  = [aws_subnet.subnet_tf_1.id, aws_subnet.subnet_tf_2.id, aws_subnet.subnet_tf_3.id]
+  launch_configuration = aws_launch_configuration.csye6225_launch_conf.name
+  default_cooldown     = 60
+  desired_capacity     = 3
+  min_size             = 3
+  max_size             = 5
+  target_group_arns = [ aws_lb_target_group.lb-target-group.arn ]
+  tag {
+    key                 = "Name"
+    value               = var.ec2_name_tag
+    propagate_at_launch = true
+  }
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_autoscaling_policy" "WebServerScaleUpPolicy" {
+  name                   = "WebServerScaleUpPolicy"
+  scaling_adjustment     = 1
+  adjustment_type        = "ChangeInCapacity"
+  cooldown               = 60
+  autoscaling_group_name = aws_autoscaling_group.csye6225-asg.name
+}
+
+resource "aws_autoscaling_policy" "WebServerScaleDownPolicy" {
+  name                   = "WebServerScaleDownPolicy"
+  scaling_adjustment     = -1
+  adjustment_type        = "ChangeInCapacity"
+  cooldown               = 60
+  autoscaling_group_name = aws_autoscaling_group.csye6225-asg.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "CPUAlarmHigh" {
+  alarm_name          = "CPUAlarmHigh"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "90"
+  alarm_description   = "Scale-up if CPU > 90% for 10 minutes"
+  alarm_actions       = [aws_autoscaling_policy.WebServerScaleUpPolicy.arn]
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.csye6225-asg.name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "CPUAlarmLow" {
+  alarm_name          = "CPUAlarmLow"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "70"
+  alarm_description   = "Scale-down if CPU < 70% for 10 minutes"
+  alarm_actions       = [aws_autoscaling_policy.WebServerScaleDownPolicy.arn]
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.csye6225-asg.name
+  }
+}
+
+resource "aws_lb" "application-lb" {
+  name               = "csye6225-app-lb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.application_security_group.id]
+  subnets            = [aws_subnet.subnet_tf_1.id, aws_subnet.subnet_tf_2.id, aws_subnet.subnet_tf_3.id]
+
+  enable_deletion_protection = false
+  # access_logs {
+  #   bucket  = aws_s3_bucket.lb_logs.bucket
+  #   prefix  = "test-lb"
+  #   enabled = true
+  # }
+
+  tags = {
+    Name = "EC2-LoadBalancer"
+  }
+}
+
+resource "aws_lb_target_group" "lb-target-group" {
+  name     = "csye6225-lb-tg"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.vpc_tf.id
+  health_check {
+    port = "8080"
+    path = "/"
+    matcher = "200"
+  }
+}
+
+#Listener
+resource "aws_lb_listener" "lb-listener" {
+  load_balancer_arn = aws_lb.application-lb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.lb-target-group.arn
+  }
 }
 
 resource "aws_dynamodb_table" "csye6225-dynamodb-table" {
@@ -532,7 +661,6 @@ resource "aws_iam_policy" "cicd_upload_policy" {
 # get current aws caller identity
 data "aws_caller_identity" "current" {}
 
-# TODO: check if the "*" in resources in below policy has to be replaced
 resource "aws_iam_policy" "codedeploy_policy" {
   name        = "GH-Code-Deploy"
   description = "This policy allows GitHub Actions to call CodeDeploy APIs to initiate application deployment on EC2 instances"
@@ -635,13 +763,13 @@ resource "aws_codedeploy_app" "codedeploy_app" {
 
 
 resource "aws_codedeploy_deployment_group" "codedeploy_deployment_group" {
-  app_name              = aws_codedeploy_app.codedeploy_app.name
-  deployment_group_name = var.codedeploy_group_name
-  service_role_arn      = aws_iam_role.CodeDeployServiceRole.arn
+  app_name               = aws_codedeploy_app.codedeploy_app.name
+  deployment_group_name  = var.codedeploy_group_name
+  service_role_arn       = aws_iam_role.CodeDeployServiceRole.arn
   deployment_config_name = "CodeDeployDefault.AllAtOnce"
   deployment_style {
     deployment_option = "WITHOUT_TRAFFIC_CONTROL"
-    deployment_type = "IN_PLACE"
+    deployment_type   = "IN_PLACE"
   }
 
   ec2_tag_set {
@@ -655,10 +783,10 @@ resource "aws_codedeploy_deployment_group" "codedeploy_deployment_group" {
 
 }
 
-resource "aws_eip" "ec2_eip" {
-  instance = aws_instance.csye6225-ec2instance.id
-  vpc = true
-}
+# resource "aws_eip" "ec2_eip" {
+#   instance = aws_instance.csye6225-ec2instance.id
+#   vpc = true
+# }
 
 data "aws_route53_zone" "selected_zone" {
   name         = var.hosted_zone_name
@@ -669,7 +797,15 @@ resource "aws_route53_record" "ec2_dns_record" {
   zone_id = data.aws_route53_zone.selected_zone.zone_id
   name    = "www.api.${data.aws_route53_zone.selected_zone.name}"
   type    = "A"
-  ttl     = "60"
-  records = [aws_eip.ec2_eip.public_ip]
+  # ttl     = "60"
+  # records = [aws_eip.ec2_eip.public_ip]
+  alias {
+    name                   = aws_lb.application-lb.dns_name
+    zone_id                = aws_lb.application-lb.zone_id
+    evaluate_target_health = true
+  }
 }
+# TODO: Add aws_lb in the alias here
+
+
 
