@@ -442,13 +442,13 @@ resource "aws_autoscaling_policy" "WebServerScaleDownPolicy" {
 resource "aws_cloudwatch_metric_alarm" "CPUAlarmHigh" {
   alarm_name          = "CPUAlarmHigh"
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
+  evaluation_periods  = "1"
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
-  period              = "300"
+  period              = "60"
   statistic           = "Average"
-  threshold           = "90"
-  alarm_description   = "Scale-up if CPU > 90% for 10 minutes"
+  threshold           = "5"
+  alarm_description   = "Scale-up if CPU > 5% within 1 mins"
   alarm_actions       = [aws_autoscaling_policy.WebServerScaleUpPolicy.arn]
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.csye6225-asg.name
@@ -458,13 +458,13 @@ resource "aws_cloudwatch_metric_alarm" "CPUAlarmHigh" {
 resource "aws_cloudwatch_metric_alarm" "CPUAlarmLow" {
   alarm_name          = "CPUAlarmLow"
   comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "2"
+  evaluation_periods  = "1"
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
-  period              = "300"
+  period              = "60"
   statistic           = "Average"
-  threshold           = "70"
-  alarm_description   = "Scale-down if CPU < 70% for 10 minutes"
+  threshold           = "3"
+  alarm_description   = "Scale-down if CPU < 3% within 1 mins"
   alarm_actions       = [aws_autoscaling_policy.WebServerScaleDownPolicy.arn]
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.csye6225-asg.name
@@ -771,7 +771,12 @@ resource "aws_codedeploy_deployment_group" "codedeploy_deployment_group" {
     deployment_option = "WITHOUT_TRAFFIC_CONTROL"
     deployment_type   = "IN_PLACE"
   }
-
+  autoscaling_groups = [ aws_autoscaling_group.csye6225-asg.name ]
+  load_balancer_info {
+    target_group_info{
+      name = aws_lb_target_group.lb-target-group.name
+    }
+  }
   ec2_tag_set {
     ec2_tag_filter {
       key   = "Name"
@@ -805,7 +810,6 @@ resource "aws_route53_record" "ec2_dns_record" {
     evaluate_target_health = true
   }
 }
-# TODO: Add aws_lb in the alias here
 
 
 
