@@ -204,9 +204,9 @@ resource "aws_route_table_association" "route_table_association3" {
   route_table_id = aws_route_table.route_table_tf.id
 } # end resource
 
-resource "aws_security_group" "application_security_group" {
-  name        = "application_security_group"
-  description = "Application Security Group"
+resource "aws_security_group" "lb_security_group" {
+  name        = "loadbalancer_security_group"
+  description = "Load Balancer Security Group"
   vpc_id      = aws_vpc.vpc_tf.id
 
   ingress {
@@ -226,21 +226,69 @@ resource "aws_security_group" "application_security_group" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
+  # ingress {
+  #   description = "NodeJs"
+  #   from_port   = 8080
+  #   to_port     = 8080
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+
+  # }
+
+egress {
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  # egress {
+  #   from_port   = 0
+  #   to_port     = 0
+  #   protocol    = "-1"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
+
+  tags = {
+    Name = "lb_security_group"
+  }
+}
+resource "aws_security_group" "application_security_group" {
+  name        = "application_security_group"
+  description = "Application Security Group"
+  vpc_id      = aws_vpc.vpc_tf.id
+
+  # ingress {
+  #   description = "HTTP"
+  #   from_port   = 80
+  #   to_port     = 80
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+
+
+  # }
+  # ingress {
+  #   description = "HTTPS"
+  #   from_port   = 443
+  #   to_port     = 443
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
+
+  # ingress {
+  #   description = "SSH"
+  #   from_port   = 22
+  #   to_port     = 22
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
 
   ingress {
     description = "NodeJs"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-
+    # cidr_blocks = ["0.0.0.0/0"]
+    security_groups = [aws_security_group.lb_security_group.id]
   }
 
 
@@ -255,6 +303,8 @@ resource "aws_security_group" "application_security_group" {
     Name = "application_security_group"
   }
 }
+
+
 
 resource "aws_security_group" "db_security_group" {
   name        = "db_security_group"
@@ -475,7 +525,7 @@ resource "aws_lb" "application-lb" {
   name               = "csye6225-app-lb"
   internal           = false
   load_balancer_type = "application"
-  security_groups    = [aws_security_group.application_security_group.id]
+  security_groups    = [aws_security_group.lb_security_group.id]
   subnets            = [aws_subnet.subnet_tf_1.id, aws_subnet.subnet_tf_2.id, aws_subnet.subnet_tf_3.id]
 
   enable_deletion_protection = false
