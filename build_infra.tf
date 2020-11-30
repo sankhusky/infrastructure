@@ -861,5 +861,9 @@ resource "aws_route53_record" "ec2_dns_record" {
   }
 }
 
+resource "aws_sns_topic" "webapp-updates" {
+  name = "sns-csye-6225-webapp"
+}
+
 
 
