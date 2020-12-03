@@ -119,7 +119,12 @@ variable "hosted_zone_name" {
 locals {
   artifact_bucket_path = join("/", [var.artifact_bucket_name, var.artifact_folder_name])
 }
-
+variable "sns_arn" {
+  type = string
+}
+variable "environment" {
+  type = string
+}
 
 resource "aws_vpc" "vpc_tf" {
   cidr_block                     = var.vpc_cidr
@@ -235,7 +240,7 @@ resource "aws_security_group" "lb_security_group" {
 
   # }
 
-egress {
+  egress {
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
@@ -274,13 +279,13 @@ resource "aws_security_group" "application_security_group" {
   #   cidr_blocks = ["0.0.0.0/0"]
   # }
 
-  # ingress {
-  #   description = "SSH"
-  #   from_port   = 22
-  #   to_port     = 22
-  #   protocol    = "tcp"
-  #   cidr_blocks = ["0.0.0.0/0"]
-  # }
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   ingress {
     description = "NodeJs"
@@ -401,6 +406,10 @@ data "aws_ami" "csye-ami" {
   owners = [var.dev_account] # dev
 }
 
+resource "aws_sns_topic" "webapp-updates" {
+  name = "sns-csye-6225-webapp"
+}
+
 #-----user data---------
 data "template_file" "init_instance" {
   template = file(join("", [path.module, "/init_instance.tpl"]))
@@ -412,6 +421,8 @@ data "template_file" "init_instance" {
     bucket_name        = aws_s3_bucket.csye_6225_s3_bucket.bucket
     db_name            = aws_db_instance.rds_db_instance.name
     aws_default_region = var.region
+    sns_arn            = aws_sns_topic.webapp-updates.arn
+    environment        = var.environment
   }
 }
 # If there's connection issue, try connecting the gateway by specifying the gateway_id in association, instead of subnet id for each subnet -- NOT NEEDED
@@ -462,7 +473,7 @@ resource "aws_autoscaling_group" "csye6225-asg" {
   desired_capacity     = 3
   min_size             = 3
   max_size             = 5
-  target_group_arns = [ aws_lb_target_group.lb-target-group.arn ]
+  target_group_arns    = [aws_lb_target_group.lb-target-group.arn]
   tag {
     key                 = "Name"
     value               = var.ec2_name_tag
@@ -546,8 +557,8 @@ resource "aws_lb_target_group" "lb-target-group" {
   protocol = "HTTP"
   vpc_id   = aws_vpc.vpc_tf.id
   health_check {
-    port = "8080"
-    path = "/"
+    port    = "8080"
+    path    = "/"
     matcher = "200"
   }
 }
@@ -707,6 +718,22 @@ resource "aws_iam_policy" "cicd_upload_policy" {
 }
   EOF
 }
+# resource "aws_iam_policy" "sns_publish_policy" {
+#   name        = "publish-to-sns"
+#   description = "This policy allows the instance to publish to SNS"
+#   policy      = <<EOF
+# {
+
+#   "Statement": [
+#     {
+#       "Effect": "Allow",
+#       "Action": "sns:Publish",
+#       "Resource": ${aws_sns_topic.webapp-updates.arn}
+#     }
+#   ]
+# }
+#   EOF
+# }
 
 # get current aws caller identity
 data "aws_caller_identity" "current" {}
@@ -796,6 +823,11 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_policy_attachment" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
+resource "aws_iam_role_policy_attachment" "sns_policy_attachment" {
+  role       = aws_iam_role.ec2_iam_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSNSFullAccess"
+}
+
 resource "aws_iam_user_policy_attachment" "cicd_upload_policy_attach" {
   user       = data.aws_iam_user.cicd_user.user_name
   policy_arn = aws_iam_policy.cicd_upload_policy.arn
@@ -821,9 +853,9 @@ resource "aws_codedeploy_deployment_group" "codedeploy_deployment_group" {
     deployment_option = "WITHOUT_TRAFFIC_CONTROL"
     deployment_type   = "IN_PLACE"
   }
-  autoscaling_groups = [ aws_autoscaling_group.csye6225-asg.name ]
+  autoscaling_groups = [aws_autoscaling_group.csye6225-asg.name]
   load_balancer_info {
-    target_group_info{
+    target_group_info {
       name = aws_lb_target_group.lb-target-group.name
     }
   }
@@ -861,5 +893,119 @@ resource "aws_route53_record" "ec2_dns_record" {
   }
 }
 
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_file = "../serverless/index.js"
+  output_path = "lambda_function_payload.zip"
+}
+resource "aws_iam_role" "iam_role_lambda" {
+  name = "iam_role_lambda"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+}
+resource "aws_iam_role_policy_attachment" "lambda_role_policy" {
+  role       = aws_iam_role.iam_role_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_permission" "lambda_with_sns" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.csye6225_lambda.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.webapp-updates.arn
+}
+
+resource "aws_lambda_function" "csye6225_lambda" {
+  filename      = "lambda_function_payload.zip"
+  function_name = "csye6225_lambda"
+  role          = aws_iam_role.iam_role_lambda.arn
+  handler       = "index.handler"
+
+  # The filebase64sha256() function is available in Terraform 0.11.12 and later
+  # For Terraform 0.11.11 and earlier, use the base64sha256() function and the file() function:
+  # source_code_hash = "${base64sha256(file("lambda_function_payload.zip"))}"
+  # source_code_hash = filebase64sha256("lambda_function_payload.zip")
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+
+  runtime                        = "nodejs12.x"
+  timeout                        = 15
+  reserved_concurrent_executions = 1
+  # environment {
+  #   variables = {
+  #     foo = "bar"
+  #   }
+  # }
+}
+
+resource "aws_sns_topic_subscription" "sns_lambda_subscription" {
+  topic_arn = aws_sns_topic.webapp-updates.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.csye6225_lambda.arn
+}
+
+resource "aws_iam_policy" "lambda-ses-policy" {
+  name        = "LAMBDA-SES"
+  description = "Policy to allow lambda to send emails through SES"
+  policy      = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ses:SendEmail",
+                "ses:SendRawEmail"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+  EOF
+}
+resource "aws_iam_policy" "lambda-dynamo-policy" {
+  name        = "LAMBDA-DYNAMO"
+  description = "Policy to allow lambda to PUT int the DynamoDB table"
+  policy      = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+         {            
+            "Effect": "Allow",
+            "Action": [
+                "DynamoDB:PutItem",
+                "DynamoDB:Scan"
+            ],
+            "Resource": [
+                "${aws_dynamodb_table.csye6225-dynamodb-table.arn}"
+            ]
+        }
+    ]
+}
+  EOF
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_ses_policy_attach" {
+  role       = aws_iam_role.iam_role_lambda.name
+  policy_arn = aws_iam_policy.lambda-ses-policy.arn
+}
+resource "aws_iam_role_policy_attachment" "lambda_dyamo_policy_attach" {
+  role       = aws_iam_role.iam_role_lambda.name
+  policy_arn = aws_iam_policy.lambda-dynamo-policy.arn
+}
 
 
