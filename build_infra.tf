@@ -898,8 +898,8 @@ data "archive_file" "lambda_zip" {
   source_file = "../serverless/index.js"
   output_path = "lambda_function_payload.zip"
 }
-resource "aws_iam_role" "iam_for_lambda" {
-  name = "iam_for_lambda"
+resource "aws_iam_role" "iam_role_lambda" {
+  name = "iam_role_lambda"
 
   assume_role_policy = <<EOF
 {
@@ -917,11 +917,23 @@ resource "aws_iam_role" "iam_for_lambda" {
 }
 EOF
 }
+resource "aws_iam_role_policy_attachment" "lambda_role_policy" {
+  role       = aws_iam_role.iam_role_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_permission" "lambda_with_sns" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.csye6225_lambda.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.webapp-updates.arn
+}
 
 resource "aws_lambda_function" "csye6225_lambda" {
   filename      = "lambda_function_payload.zip"
   function_name = "csye6225_lambda"
-  role          = aws_iam_role.iam_for_lambda.arn
+  role          = aws_iam_role.iam_role_lambda.arn
   handler       = "index.handler"
 
   # The filebase64sha256() function is available in Terraform 0.11.12 and later
@@ -930,8 +942,9 @@ resource "aws_lambda_function" "csye6225_lambda" {
   # source_code_hash = filebase64sha256("lambda_function_payload.zip")
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-  runtime = "nodejs12.x"
-
+  runtime                        = "nodejs12.x"
+  timeout                        = 15
+  reserved_concurrent_executions = 1
   # environment {
   #   variables = {
   #     foo = "bar"
@@ -939,6 +952,60 @@ resource "aws_lambda_function" "csye6225_lambda" {
   # }
 }
 
+resource "aws_sns_topic_subscription" "sns_lambda_subscription" {
+  topic_arn = aws_sns_topic.webapp-updates.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.csye6225_lambda.arn
+}
 
+resource "aws_iam_policy" "lambda-ses-policy" {
+  name        = "LAMBDA-SES"
+  description = "Policy to allow lambda to send emails through SES"
+  policy      = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ses:SendEmail",
+                "ses:SendRawEmail"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+  EOF
+}
+resource "aws_iam_policy" "lambda-dynamo-policy" {
+  name        = "LAMBDA-DYNAMO"
+  description = "Policy to allow lambda to PUT int the DynamoDB table"
+  policy      = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+         {            
+            "Effect": "Allow",
+            "Action": [
+                "DynamoDB:PutItem",
+                "DynamoDB:Scan"
+            ],
+            "Resource": [
+                "${aws_dynamodb_table.csye6225-dynamodb-table.arn}"
+            ]
+        }
+    ]
+}
+  EOF
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_ses_policy_attach" {
+  role       = aws_iam_role.iam_role_lambda.name
+  policy_arn = aws_iam_policy.lambda-ses-policy.arn
+}
+resource "aws_iam_role_policy_attachment" "lambda_dyamo_policy_attach" {
+  role       = aws_iam_role.iam_role_lambda.name
+  policy_arn = aws_iam_policy.lambda-dynamo-policy.arn
+}
 
 
