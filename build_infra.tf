@@ -377,6 +377,23 @@ resource "aws_db_subnet_group" "rds_subnet_group" {
     Name = "csye6225 DB subnet group"
   }
 }
+
+resource "aws_db_parameter_group" "rds_db_param_group" {
+  name   = "rds-pg-csye6225"
+  family = "mysql5.7"
+
+  parameter {
+    name  = "performance_schema"
+    value = "1"
+    apply_method = "pending-reboot"
+  }
+
+}
+
+#data "aws_rds_certificate" "rds-cert" {
+  #latest_valid_till = true
+#}
+
 resource "aws_db_instance" "rds_db_instance" {
   allocated_storage      = var.rds_storage_size
   storage_type           = "gp2"
@@ -392,7 +409,9 @@ resource "aws_db_instance" "rds_db_instance" {
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
   db_subnet_group_name   = aws_db_subnet_group.rds_subnet_group.name
   publicly_accessible    = false
-
+  storage_encrypted      = true
+  parameter_group_name = aws_db_parameter_group.rds_db_param_group.name
+  ca_cert_identifier= "rds-ca-2019"
 }
 
 data "aws_ami" "csye-ami" {
@@ -563,12 +582,18 @@ resource "aws_lb_target_group" "lb-target-group" {
   }
 }
 
+data "aws_acm_certificate" "ssl-certificate" {
+  domain   = var.hosted_zone_name
+  statuses = ["ISSUED"]
+}
+
 #Listener
 resource "aws_lb_listener" "lb-listener" {
   load_balancer_arn = aws_lb.application-lb.arn
-  port              = "80"
-  protocol          = "HTTP"
-
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  certificate_arn   = data.aws_acm_certificate.ssl-certificate.arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.lb-target-group.arn
@@ -882,7 +907,7 @@ data "aws_route53_zone" "selected_zone" {
 
 resource "aws_route53_record" "ec2_dns_record" {
   zone_id = data.aws_route53_zone.selected_zone.zone_id
-  name    = "www.api.${data.aws_route53_zone.selected_zone.name}"
+  name    = "${data.aws_route53_zone.selected_zone.name}"
   type    = "A"
   # ttl     = "60"
   # records = [aws_eip.ec2_eip.public_ip]

@@ -22,4 +22,10 @@ It may be used to create:
 - `terraform apply -var-file="variables.tfvars"` (Apply changes)
 - `terraform destroy -var-file=variables.tfvars` (Destroy all the resources and changes)
 
+AWS CLI Command for Importing SSL Certificate
+```
+$ aws acm import-certificate --certificate fileb://Certificate.pem \
+      --certificate-chain fileb://CertificateChain.pem \
+      --private-key fileb://PrivateKey.pem 	
+```
 
